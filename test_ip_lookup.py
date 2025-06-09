@@ -3,7 +3,7 @@
 Simple test script for the IP lookup tool
 """
 
-from ip_lookup import IPLookupTool
+from ip_lookup_enhanced import IPLookupTool
 
 def test_ip_validation():
     """Test IP address validation"""

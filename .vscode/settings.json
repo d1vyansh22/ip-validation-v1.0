@@ -1,0 +1,5 @@
+{
+  "python.envFile": "${workspaceFolder}/.env"
+}
+// This file is used to configure the Python environment for the workspace.
+// The `python.envFile` setting points to the `.env` file in the workspace folder,
