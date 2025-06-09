@@ -1,47 +1,27 @@
-#!/usr/bin/env python3
-"""
-Simple test script for the IP lookup tool
-"""
-
+import unittest
 from ip_lookup_enhanced import IPLookupTool
 
-def test_ip_validation():
-    """Test IP address validation"""
-    tool = IPLookupTool()
+class TestIPLookupTool(unittest.TestCase):
+    def setUp(self):
+        self.tool = IPLookupTool()
 
-    # Valid IPv4 addresses
-    assert tool.validate_ip_address("8.8.8.8") == True
-    assert tool.validate_ip_address("192.168.1.1") == True
-    assert tool.validate_ip_address("255.255.255.255") == True
+    def test_ip_validation(self):
+        self.assertTrue(self.tool.validate_ip_address("8.8.8.8"))
+        self.assertTrue(self.tool.validate_ip_address("192.168.1.1"))
+        self.assertTrue(self.tool.validate_ip_address("255.255.255.255"))
+        self.assertFalse(self.tool.validate_ip_address("256.1.1.1"))
+        self.assertFalse(self.tool.validate_ip_address("not.an.ip"))
+        self.assertFalse(self.tool.validate_ip_address(""))
 
-    # Invalid addresses
-    assert tool.validate_ip_address("256.1.1.1") == False
-    assert tool.validate_ip_address("not.an.ip") == False
-    assert tool.validate_ip_address("") == False
-
-    print("✅ IP validation tests passed!")
-
-def test_api_call():
-    """Test API call with a known good IP"""
-    tool = IPLookupTool()
-
-    # Test with Google DNS
-    data = tool.get_ip_info("8.8.8.8")
-
-    if data:
-        print("✅ API call successful!")
-        print(f"📍 IP: {data.get('ip')}")
-        print(f"🏢 Org: {data.get('org')}")
-        print(f"🌍 Country: {data.get('country')}")
-    else:
-        print("❌ API call failed")
+    def test_api_call(self):
+        data = self.tool.get_ip_info("8.8.8.8")
+        self.assertIsInstance(data, dict)
+        if data is not None and "error" in data:
+            self.fail(f"API call failed: {data['error']}")
+        if data is not None:
+            self.assertEqual(data.get("ip"), "8.8.8.8")
+        else:
+            self.fail("API call returned None")
 
 if __name__ == "__main__":
-    print("🧪 Running IP Lookup Tool Tests...")
-    print("-" * 40)
-
-    test_ip_validation()
-    test_api_call()
-
-    print("-" * 40)
-    print("✅ All tests completed!")
+    unittest.main()
