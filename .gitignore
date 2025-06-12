@@ -3,3 +3,4 @@ __pycache__/
 .vscode/
 ip-tool-env/
 build/
+REDIS_INFO.md

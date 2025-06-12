@@ -20,6 +20,7 @@ import argparse
 import redis
 from dotenv import load_dotenv
 from typing import cast, Optional, Dict, Any
+import logging
 
 import os
 load_dotenv()  # Load .env file
@@ -33,6 +34,8 @@ REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))  # Default to 6379 if not set
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)  # Optional Redis password
 CACHE_TTL = int(os.getenv('CACHE_TTL', 86400))  # Default to 24 hours if not set
 MAX_CONCURRENT_REQUESTS = int(os.getenv('MAX_CONCURRENT_REQUESTS', 10))  # Default to 10 if not set
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
 class IPLookupTool:
     """Main class for IP address lookup functionality with Redis caching and retry logic"""
@@ -61,6 +64,15 @@ class IPLookupTool:
         )
         self.cache_ttl =  CACHE_TTL # 24 hours default
         self.max_workers = MAX_CONCURRENT_REQUESTS
+        self.api_metrics = {'calls': 0, 'failures': 0, 'total_time': 0.0}
+        self.redis_metrics = {'hits': 0, 'misses': 0, 'failures': 0}
+
+        try:
+            self.redis_client.ping()
+            self.redis_available = True
+        except redis.RedisError as e:
+            logging.error(f"Redis unavailable: {e}")
+            self.redis_available = False
 
     def validate_ip_address(self, ip: str) -> bool:
         """
@@ -80,25 +92,51 @@ class IPLookupTool:
 
         return bool(re.match(ipv4_pattern, ip) or re.match(ipv6_pattern, ip))
 
-    def _get_from_cache(self, ip: str) -> Optional[Dict]:
-        """Retrieve cached IP data"""
+    def redis_health(self):
+        """Return Redis health and info."""
+        if not self.redis_available:
+            return {'status': 'down'}
         try:
-            # Explicit type annotation for Redis response
-            cached: Optional[str] = cast(Optional[str], self.redis_client.get(ip))
+            info = self.redis_client.info()
+            return {'status': 'up', 'info': info}
+        except redis.RedisError as e:
+            return {'status': 'error', 'error': str(e)}
+
+    def api_metrics_info(self):
+        """Return API call efficiency metrics."""
+        calls = self.api_metrics['calls']
+        avg_time = self.api_metrics['total_time'] / calls if calls else 0
+        return {
+            'calls': calls,
+            'failures': self.api_metrics['failures'],
+            'avg_time': avg_time
+        }
+
+    def _get_from_cache(self, ip: str) -> Optional[Dict]:
+        key = f"ipinfo:{ip}"
+        try:
+            cached: Optional[str] = cast(Optional[str], self.redis_client.get(key))
+            if cached:
+                self.redis_metrics['hits'] += 1
+            else:
+                self.redis_metrics['misses'] += 1
             return json.loads(cached) if cached else None
-        except (redis.RedisError,json.JSONDecodeError):
+        except (redis.RedisError, json.JSONDecodeError) as e:
+            self.redis_metrics['failures'] += 1
+            logging.warning(f"Redis cache error: {e}")
             return None
 
     def _store_in_cache(self, ip: str, data: Dict) -> None:
-        """Store IP data in cache"""
+        key = f"ipinfo:{ip}"
         try:
             self.redis_client.setex(
-                name=ip,
+                name=key,
                 time=self.cache_ttl,
                 value=json.dumps(data)
             )
-        except redis.RedisError:
-            pass
+        except redis.RedisError as e:
+            self.redis_metrics['failures'] += 1
+            logging.warning(f"Redis store error: {e}")
 
     def get_ip_info(self, ip_address: str, max_retries: Optional[int] = None) -> Optional[Dict[Any, Any]]:
         """
@@ -129,7 +167,11 @@ class IPLookupTool:
                     headers['Authorization'] = f'Bearer {self.api_token}'
 
                 # Make API request
+                start = time.time()
                 response = requests.get(url, headers=headers, timeout=self.timeout)
+                elapsed = time.time() - start
+                self.api_metrics['calls'] += 1
+                self.api_metrics['total_time'] += elapsed
 
                 # Check response status
                 if response.status_code == 200:
@@ -137,36 +179,36 @@ class IPLookupTool:
                     self._store_in_cache(ip_address, data)
                     return data
                 elif response.status_code == 429:
-                    print(f"⚠️  Rate limit exceeded. Attempt {attempt + 1}/{max_retries}")
+                    logging.warning(f"⚠️  Rate limit exceeded. Attempt {attempt + 1}/{max_retries}")
                     if attempt < max_retries - 1:
                         wait_time = 2 ** attempt
-                        print(f"⏳ Waiting {wait_time} seconds before retry...")
+                        logging.info(f"⏳ Waiting {wait_time} seconds before retry...")
                         time.sleep(wait_time)
                 elif response.status_code == 404:
-                    print(f"❌ IP address not found: {ip_address}")
+                    logging.error(f"❌ IP address not found: {ip_address}")
                     return None
                 else:
-                    print(f"❌ HTTP Error {response.status_code}: {response.text}")
+                    logging.error(f"❌ HTTP Error {response.status_code}: {response.text}")
                     return None
 
             except requests.exceptions.Timeout:
-                print(f"⏰ Timeout on attempt {attempt + 1}/{max_retries}")
+                logging.error(f"⏰ Timeout on attempt {attempt + 1}/{max_retries}")
             except requests.exceptions.ConnectionError:
-                print(f"🌐 Connection error on attempt {attempt + 1}/{max_retries}")
+                logging.error(f"🌐 Connection error on attempt {attempt + 1}/{max_retries}")
             except requests.exceptions.RequestException as e:
-                print(f"📡 Request error: {e}")
+                logging.error(f"📡 Request error: {e}")
                 return None
             except json.JSONDecodeError as e:
-                print(f"📋 JSON decode error: {e}")
+                logging.error(f"📋 JSON decode error: {e}")
                 return None
 
             # Wait before retry (exponential backoff)
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
-                print(f"⏳ Retrying in {wait_time} seconds...")
+                logging.info(f"⏳ Retrying in {wait_time} seconds...")
                 time.sleep(wait_time)
 
-        print(f"❌ Failed to retrieve information after {max_retries} attempts")
+        logging.error(f"❌ Failed to retrieve information after {max_retries} attempts")
         return None
 
     def format_output(self, data: Dict[Any, Any], show_raw: bool = False) -> str:
@@ -264,7 +306,7 @@ class IPLookupTool:
         total = len(ip_list)
         futures = {}
 
-        print(f"🔍 Looking up {total} IP address(es)...")
+        logging.info(f"🔍 Looking up {total} IP address(es)...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             # First pass: Check cache and submit API calls for misses
             for ip in ip_list:
@@ -278,10 +320,10 @@ class IPLookupTool:
 
             # Second pass: Process in original order with preserved prints
             for i, ip in enumerate(ip_list, 1):
-                print(f"\n📍 Processing {i}/{total}: {ip}")
+                logging.info(f"\n📍 Processing {i}/{total}: {ip}")
 
                 if not self.validate_ip_address(ip):
-                    print(f"❌ Invalid IP format: {ip}")
+                    logging.error(f"❌ Invalid IP format: {ip}")
                     results[ip] = None
                     continue
 
@@ -294,22 +336,22 @@ class IPLookupTool:
 
     def interactive_mode(self):
         """Run the tool in interactive mode"""
-        print("\n🌐 IP Address Information Lookup Tool")
-        print("=====================================")
-        print("Enter IP addresses to get detailed information.")
-        print("Commands: 'quit', 'exit', 'q' to exit")
+        logging.info("\n🌐 IP Address Information Lookup Tool")
+        logging.info("=====================================")
+        logging.info("Enter IP addresses to get detailed information.")
+        logging.info("Commands: 'quit', 'exit', 'q' to exit")
 
         if self.api_token:
-            print("✅ Using authenticated API (unlimited requests)")
+            logging.info("✅ Using authenticated API (unlimited requests)")
         else:
-            print("⚠️  Using free API (limited to 1000 requests/day per IP)")
+            logging.info("⚠️  Using free API (limited to 1000 requests/day per IP)")
 
         while True:
             try:
                 ip_input = input("\n🔍 Enter IP address: ").strip()
 
                 if ip_input.lower() in ['quit', 'exit', 'q', '']:
-                    print("\n👋 Goodbye!")
+                    logging.info("\n👋 Goodbye!")
                     break
 
                 # Handle multiple IPs separated by commas or spaces
@@ -318,41 +360,47 @@ class IPLookupTool:
                 if len(ip_list) == 1:
                     ip = ip_list[0]
                     if not self.validate_ip_address(ip):
-                        print("❌ Invalid IP address format")
+                        logging.error("❌ Invalid IP address format")
                         continue
 
-                    print(f"⏳ Looking up: {ip}")
+                    logging.info(f"⏳ Looking up: {ip}")
                     data = self.get_ip_info(ip)
 
                     if data:
-                        print(self.format_output(data))
+                        logging.info(self.format_output(data))
 
                         # Ask for raw JSON
                         show_raw = input("\n📋 Show raw JSON? (y/n): ").strip().lower()
                         if show_raw == 'y':
-                            print(json.dumps(data, indent=2))
+                            logging.info(json.dumps(data, indent=2))
                     else:
-                        print("❌ Failed to retrieve information")
+                        logging.error("❌ Failed to retrieve information")
 
                 elif len(ip_list) > 1:
                     # Multiple IP lookup
                     results = self.lookup_multiple_ips(ip_list)
 
-                    print("\n" + "=" * 60)
-                    print("📊 MULTIPLE IP LOOKUP RESULTS")
-                    print("=" * 60)
+                    logging.info("\n" + "=" * 60)
+                    logging.info("📊 MULTIPLE IP LOOKUP RESULTS")
+                    logging.info("=" * 60)
 
                     for ip, data in results.items():
                         if data:
-                            print(self.format_output(data))
+                            logging.info(self.format_output(data))
                         else:
-                            print(f"\n❌ Failed to get information for: {ip}\n")
+                            logging.error(f"\n❌ Failed to get information for: {ip}\n")
 
             except KeyboardInterrupt:
-                print("\n\n👋 Interrupted by user. Goodbye!")
+                logging.info("\n\n👋 Interrupted by user. Goodbye!")
                 break
             except Exception as e:
-                print(f"\n❌ Unexpected error: {e}")
+                logging.error(f"\n❌ Unexpected error: {e}")
+
+    def monitor(self):
+        print("\n--- Monitoring Info ---")
+        print("Redis:", self.redis_health())
+        print("API:", self.api_metrics_info())
+        print("Redis Metrics:", self.redis_metrics)
 
 
 def main():
@@ -362,17 +410,23 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python ip_lookup.py                   # Interactive mode
-  python ip_lookup.py 8.8.8.8           # Single IP lookup
-  python ip_lookup.py --json 8.8.8.8    # JSON output
-  python ip_lookup.py --token YOUR_TOKEN # With authentication
-        """
+  python ip_lookup_enhanced.py                   # Interactive mode
+  python ip_lookup_enhanced.py 8.8.8.8           # Single IP lookup
+  python ip_lookup_enhanced.py --json 8.8.8.8    # JSON output
+  python ip_lookup_enhanced.py --token YOUR_TOKEN # With authentication
+  python ip_lookup_enhanced.py --monitor           # Show monitoring info and exit
+  python ip_lookup_enhanced.py --batch ips.txt     # Batch mode with file
+  python ip_lookup_enhanced.py --healthcheck       # Check Redis and API health and exit
+"""
     )
 
     parser.add_argument('ip', nargs='?', help='IP address to lookup')
     parser.add_argument('--token', '-t', help='IPInfo API token for authentication')
     parser.add_argument('--json', '-j', action='store_true', help='Output raw JSON')
     parser.add_argument('--timeout', type=int, default=10, help='Request timeout (default: 10s)')
+    parser.add_argument('--monitor', action='store_true', help='Show monitoring info and exit')
+    parser.add_argument('--batch', type=str, help='Comma-separated list of IPs or path to file with IPs')
+    parser.add_argument('--healthcheck', action='store_true', help='Check Redis and API health and exit')
 
     args = parser.parse_args()
 
@@ -382,23 +436,45 @@ Examples:
     if args.ip:
         # Single IP mode
         if not tool.validate_ip_address(args.ip):
-            print("❌ Invalid IP address format")
+            logging.error("❌ Invalid IP address format")
             sys.exit(1)
 
-        print(f"🔍 Looking up: {args.ip}")
+        logging.info(f"🔍 Looking up: {args.ip}")
         data = tool.get_ip_info(args.ip)
 
         if data:
             if args.json:
-                print(json.dumps(data, indent=2))
+                logging.info(json.dumps(data, indent=2))
             else:
-                print(tool.format_output(data))
+                logging.info(tool.format_output(data))
         else:
-            print("❌ Failed to retrieve information")
+            logging.error("❌ Failed to retrieve information")
             sys.exit(1)
     else:
         # Interactive mode
         tool.interactive_mode()
+
+    if args.monitor:
+        tool.monitor()
+        sys.exit(0)
+    if args.healthcheck:
+        print("Redis Health:", tool.redis_health())
+        print("API Metrics:", tool.api_metrics_info())
+        sys.exit(0)
+    if args.batch:
+        if os.path.isfile(args.batch):
+            with open(args.batch) as f:
+                ip_list = [line.strip() for line in f if line.strip()]
+        else:
+            ip_list = [ip.strip() for ip in args.batch.split(',') if ip.strip()]
+        results = tool.lookup_multiple_ips(ip_list)
+        for ip, data in results.items():
+            print(f"\n{ip}:")
+            if data:
+                print(tool.format_output(data))
+            else:
+                print("❌ Failed to retrieve information")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
