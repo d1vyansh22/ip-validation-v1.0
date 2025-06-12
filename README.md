@@ -14,6 +14,14 @@ A comprehensive Python tool for retrieving detailed IP address information using
 - 📄 **Flexible Output**: Formatted display or raw JSON
 - ⚡ **Error Handling**: Comprehensive error management
 
+## New Features (v1.1)
+- **Redis Health Check**: Use `--healthcheck` to check Redis and API health.
+- **API Monitoring**: Use `--monitor` to see API call efficiency and Redis stats.
+- **Batch Mode**: Use `--batch <file.txt>` or `--batch <ip1,ip2,...>` to process multiple IPs at once.
+- **Improved Error Handling**: Graceful fallback if Redis or API is down, with detailed logging.
+- **Structured Redis Caching**: Uses `ipinfo:{ip}` as cache key for better management.
+- **Robust Testing**: Tests cover Redis, API, input, batch, and error scenarios.
+
 ## Quick Start 🚀
 
 ### Option 1: Automatic Setup (Recommended)
@@ -33,11 +41,7 @@ chmod +x setup_unix.sh
 
 1. **Create virtual environment:**
    ```bash
-   python -m venv ip-tool-env
-
-   # Activate it:
-   # Windows: ip-tool-env\Scripts\activate
-   # macOS/Linux: source ip-tool-env/bin/activate
+   python3 -m venv ip-tool-env && source ip-tool-env/bin/activate
    ```
 
 2. **Install dependencies:**
@@ -76,6 +80,26 @@ python ip_lookup_enhanced.py --token YOUR_TOKEN 8.8.8.8
 Enter IPs separated by commas or spaces:
 ```
 Enter IP address: 8.8.8.8, 1.1.1.1, 208.67.222.222
+```
+
+### Batch Mode (file)
+```bash
+python ip_lookup_enhanced.py --batch ips.txt
+```
+
+### Batch Mode (comma-separated)
+```bash
+python ip_lookup_enhanced.py --batch 8.8.8.8,1.1.1.1
+```
+
+### Monitoring Info
+```bash
+python ip_lookup_enhanced.py --monitor
+```
+
+### Health Check
+```bash
+python ip_lookup_enhanced.py --healthcheck
 ```
 
 ## API Information 📡
@@ -142,7 +166,7 @@ Modify `config.json` for default settings:
 
 Run the test script to verify functionality:
 ```bash
-python test_ip_lookup.py
+python -m unittest test_ip_lookup.py
 ```
 
 ## Troubleshooting 🔧
@@ -194,3 +218,34 @@ For IPInfo API questions, visit [ipinfo.io/support](https://ipinfo.io/support).
 ---
 
 **Happy IP hunting! 🕵️‍♂️**
+
+## Setup Instructions
+
+### Windows
+1. Clone the repo
+2. Run `setup.bat` to create a virtual environment and install dependencies
+3. Set up your `.env` file with your API key and Redis config
+4. Run the tool as shown above
+
+### Linux/Mac
+1. Clone the repo
+2. Run `python3 -m venv ip-tool-env && source ip-tool-env/bin/activate`
+3. Run `pip install -r requirements.txt`
+4. Set up your `.env` file with your API key and Redis config
+5. Run the tool as shown above
+
+## Testing
+Run all tests with:
+```sh
+python -m unittest test_ip_lookup.py
+```
+
+## Recommendations for Next Version
+- Advanced logging (log to file, log rotation, log levels per module)
+- Prometheus metrics endpoint for monitoring
+- Dockerization for easy deployment
+- REST API mode for integration
+- CI/CD pipeline for automated testing
+
+---
+For any issues, see the Troubleshooting section or open an issue on GitHub.

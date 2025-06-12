@@ -1,14 +1,8 @@
 @echo off
-echo Creating virtual environment...
+REM Setup script for Windows
 python -m venv ip-tool-env
-
-echo Activating virtual environment...
 call ip-tool-env\Scripts\activate
-
-echo Installing dependencies...
-pip install --upgrade pip
 pip install -r requirements.txt
-
-echo Setup complete!
-echo To activate the environment later, run: ip-tool-env\Scripts\activate
-pause
+echo Setup complete. Activate your environment with:
+echo call ip-tool-env\Scripts\activate
+echo Then run: python ip_lookup_enhanced.py
