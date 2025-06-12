@@ -22,11 +22,14 @@ from typing import Optional, Dict, Any
 import os
 load_dotenv()  # Load .env file
 API_KEY = os.getenv('IPINFO_API_KEY') # Get API key from environment variable
+API_TIMEOUT = int(os.getenv('API_TIMEOUT', 10))  # Default to 10 if not set
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', 3))   # Default to 3 if not set
+
 
 class IPLookupTool:
     """Main class for IP address lookup functionality"""
 
-    def __init__(self, api_token: Optional[str] = None, timeout: int = 10):
+    def __init__(self, api_token: Optional[str] = None, timeout: Optional[int] = None):
         """
         Initialize the IP lookup tool
 
@@ -35,7 +38,7 @@ class IPLookupTool:
             timeout: Request timeout in seconds
         """
         self.api_token = api_token or API_KEY  # Use API key from environment variable or provided argument
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else API_TIMEOUT
         self.base_url = "https://ipinfo.io"
 
     def validate_ip_address(self, ip: str) -> bool:
@@ -56,7 +59,7 @@ class IPLookupTool:
 
         return bool(re.match(ipv4_pattern, ip) or re.match(ipv6_pattern, ip))
 
-    def get_ip_info(self, ip_address: str, max_retries: int = 3) -> Optional[Dict[Any, Any]]:
+    def get_ip_info(self, ip_address: str, max_retries: Optional[int] = None) -> Optional[Dict[Any, Any]]:
         """
         Retrieve IP information from IPInfo API with retry logic
 
@@ -67,6 +70,7 @@ class IPLookupTool:
         Returns:
             dict: IP information or None if failed
         """
+        max_retries = max_retries if max_retries is not None else MAX_RETRIES
         for attempt in range(max_retries):
             try:
                 # Construct URL
@@ -299,7 +303,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python ip_lookup.py                    # Interactive mode
+  python ip_lookup.py                   # Interactive mode
   python ip_lookup.py 8.8.8.8           # Single IP lookup
   python ip_lookup.py --json 8.8.8.8    # JSON output
   python ip_lookup.py --token YOUR_TOKEN # With authentication
