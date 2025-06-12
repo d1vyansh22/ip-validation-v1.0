@@ -10,14 +10,16 @@ Author: IP Lookup Tool
 Version: 1.0.0
 """
 
+import concurrent.futures
 import requests
 import json
 import sys
 import re
 import time
 import argparse
+import redis
 from dotenv import load_dotenv
-from typing import Optional, Dict, Any
+from typing import cast, Optional, Dict, Any
 
 import os
 load_dotenv()  # Load .env file
@@ -25,9 +27,15 @@ API_KEY = os.getenv('IPINFO_API_KEY') # Get API key from environment variable
 API_TIMEOUT = int(os.getenv('API_TIMEOUT', 10))  # Default to 10 if not set
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', 3))   # Default to 3 if not set
 
+# Redis configuration
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')  # Default to localhost if not set
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))  # Default to 6379 if not set   
+REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)  # Optional Redis password
+CACHE_TTL = int(os.getenv('CACHE_TTL', 86400))  # Default to 24 hours if not set
+MAX_CONCURRENT_REQUESTS = int(os.getenv('MAX_CONCURRENT_REQUESTS', 10))  # Default to 10 if not set
 
 class IPLookupTool:
-    """Main class for IP address lookup functionality"""
+    """Main class for IP address lookup functionality with Redis caching and retry logic"""
 
     def __init__(self, api_token: Optional[str] = None, timeout: Optional[int] = None):
         """
@@ -40,6 +48,19 @@ class IPLookupTool:
         self.api_token = api_token or API_KEY  # Use API key from environment variable or provided argument
         self.timeout = timeout if timeout is not None else API_TIMEOUT
         self.base_url = "https://ipinfo.io"
+
+        #Redis configuration
+        self.redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            password=REDIS_PASSWORD,
+            decode_responses=True,    # Critical for type safety
+            socket_timeout=3,         # Fail fast on network issues
+            socket_connect_timeout=3, # Quick failure if Redis down
+            protocol=3                # Explicit protocol version
+        )
+        self.cache_ttl =  CACHE_TTL # 24 hours default
+        self.max_workers = MAX_CONCURRENT_REQUESTS
 
     def validate_ip_address(self, ip: str) -> bool:
         """
@@ -59,9 +80,29 @@ class IPLookupTool:
 
         return bool(re.match(ipv4_pattern, ip) or re.match(ipv6_pattern, ip))
 
+    def _get_from_cache(self, ip: str) -> Optional[Dict]:
+        """Retrieve cached IP data"""
+        try:
+            # Explicit type annotation for Redis response
+            cached: Optional[str] = cast(Optional[str], self.redis_client.get(ip))
+            return json.loads(cached) if cached else None
+        except (redis.RedisError,json.JSONDecodeError):
+            return None
+
+    def _store_in_cache(self, ip: str, data: Dict) -> None:
+        """Store IP data in cache"""
+        try:
+            self.redis_client.setex(
+                name=ip,
+                time=self.cache_ttl,
+                value=json.dumps(data)
+            )
+        except redis.RedisError:
+            pass
+
     def get_ip_info(self, ip_address: str, max_retries: Optional[int] = None) -> Optional[Dict[Any, Any]]:
         """
-        Retrieve IP information from IPInfo API with retry logic
+        Retrieve IP information from IPInfo API with cache support and retry logic
 
         Args:
             ip_address: IP address to lookup
@@ -71,6 +112,12 @@ class IPLookupTool:
             dict: IP information or None if failed
         """
         max_retries = max_retries if max_retries is not None else MAX_RETRIES
+        
+        # Check cache first
+        if cached := self._get_from_cache(ip_address):
+            return cached
+        
+        # API call logic with retries
         for attempt in range(max_retries):
             try:
                 # Construct URL
@@ -86,7 +133,9 @@ class IPLookupTool:
 
                 # Check response status
                 if response.status_code == 200:
-                    return response.json()
+                    data = response.json()
+                    self._store_in_cache(ip_address, data)
+                    return data
                 elif response.status_code == 429:
                     print(f"⚠️  Rate limit exceeded. Attempt {attempt + 1}/{max_retries}")
                     if attempt < max_retries - 1:
@@ -203,7 +252,7 @@ class IPLookupTool:
 
     def lookup_multiple_ips(self, ip_list: list) -> Dict[str, Any]:
         """
-        Lookup multiple IP addresses
+        Lookup multiple IP addresses with caching amd concurrent requests
 
         Args:
             ip_list: List of IP addresses to lookup
@@ -213,24 +262,34 @@ class IPLookupTool:
         """
         results = {}
         total = len(ip_list)
+        futures = {}
 
         print(f"🔍 Looking up {total} IP address(es)...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # First pass: Check cache and submit API calls for misses
+            for ip in ip_list:
+                if not self.validate_ip_address(ip):
+                    continue
+                
+                if cached := self._get_from_cache(ip):
+                    results[ip] = cached
+                else:
+                    futures[ip] = executor.submit(self.get_ip_info, ip)
 
-        for i, ip in enumerate(ip_list, 1):
-            print(f"\n📍 Processing {i}/{total}: {ip}")
+            # Second pass: Process in original order with preserved prints
+            for i, ip in enumerate(ip_list, 1):
+                print(f"\n📍 Processing {i}/{total}: {ip}")
 
-            if not self.validate_ip_address(ip):
-                print(f"❌ Invalid IP format: {ip}")
-                results[ip] = None
-                continue
+                if not self.validate_ip_address(ip):
+                    print(f"❌ Invalid IP format: {ip}")
+                    results[ip] = None
+                    continue
 
-            data = self.get_ip_info(ip)
-            results[ip] = data
-
-            # Small delay to be respectful to the API
-            if i < total:
-                time.sleep(0.5)
-
+                if ip in futures:
+                    results[ip] = futures[ip].result()
+                    # Rate limit only actual API calls
+                    if i < total and not self._get_from_cache(ip):
+                        time.sleep(0.2)  # Reduced delay for concurrent calls
         return results
 
     def interactive_mode(self):
@@ -297,9 +356,9 @@ class IPLookupTool:
 
 
 def main():
-    """Main function with command line argument support"""
+    """Updated Main function with command line argument support and cache state"""
     parser = argparse.ArgumentParser(
-        description="IP Address Information Lookup Tool",
+        description="IP Address Information Lookup Tool with Redis caching",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
