@@ -433,27 +433,7 @@ Examples:
     # Initialize the tool
     tool = IPLookupTool(api_token=args.token, timeout=args.timeout)
 
-    if args.ip:
-        # Single IP mode
-        if not tool.validate_ip_address(args.ip):
-            logging.error("❌ Invalid IP address format")
-            sys.exit(1)
-
-        logging.info(f"🔍 Looking up: {args.ip}")
-        data = tool.get_ip_info(args.ip)
-
-        if data:
-            if args.json:
-                logging.info(json.dumps(data, indent=2))
-            else:
-                logging.info(tool.format_output(data))
-        else:
-            logging.error("❌ Failed to retrieve information")
-            sys.exit(1)
-    else:
-        # Interactive mode
-        tool.interactive_mode()
-
+    # Handle monitor, healthcheck, and batch flags first
     if args.monitor:
         tool.monitor()
         sys.exit(0)
@@ -475,6 +455,39 @@ Examples:
             else:
                 print("❌ Failed to retrieve information")
         sys.exit(0)
+
+    if args.ip:
+        # Check if multiple IPs are provided in the 'ip' argument
+        ip_list = [ip.strip() for ip in re.split(r'[\s,]+', args.ip) if ip.strip()]
+        if len(ip_list) > 1:
+            # Batch mode for multiple IPs
+            results = tool.lookup_multiple_ips(ip_list)
+            for ip, data in results.items():
+                print(f"\n{ip}:")
+                if data:
+                    print(tool.format_output(data))
+                else:
+                    print("❌ Failed to retrieve information")
+            sys.exit(0)
+        else:
+            # Single IP mode
+            ip = ip_list[0]
+            if not tool.validate_ip_address(ip):
+                logging.error("❌ Invalid IP address format")
+                sys.exit(1)
+            logging.info(f"🔍 Looking up: {ip}")
+            data = tool.get_ip_info(ip)
+            if data:
+                if args.json:
+                    logging.info(json.dumps(data, indent=2))
+                else:
+                    logging.info(tool.format_output(data))
+            else:
+                logging.error("❌ Failed to retrieve information")
+                sys.exit(1)
+    else:
+        # Interactive mode
+        tool.interactive_mode()
 
 
 if __name__ == "__main__":
