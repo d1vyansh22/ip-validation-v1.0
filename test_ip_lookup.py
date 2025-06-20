@@ -2,11 +2,14 @@ import unittest
 from ip_lookup_enhanced import IPLookupTool
 import os
 import tempfile
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock 
+import requests
 
 class TestIPLookupTool(unittest.TestCase):
     def setUp(self):
         self.tool = IPLookupTool()
+        if self.tool.redis_available:
+            self.tool.redis_client.delete('ipinfo:8.8.8.8')
 
     def test_ip_validation(self):
         self.assertTrue(self.tool.validate_ip_address("8.8.8.8"))
@@ -31,7 +34,9 @@ class TestIPLookupTool(unittest.TestCase):
         self.assertIn(health['status'], ['up', 'down', 'error'])
 
     def test_api_failure(self):
-        with patch('requests.get', side_effect=Exception("Timeout")):
+        if self.tool.redis_available:
+            self.tool.redis_client.delete('ipinfo:8.8.8.8')
+        with patch('ip_lookup_enhanced.requests.get', side_effect=requests.exceptions.Timeout):
             data = self.tool.get_ip_info('8.8.8.8')
             self.assertIsNone(data)
 
